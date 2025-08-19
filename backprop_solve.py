@@ -20,6 +20,32 @@ unsolved_grid = np.array(
 )
 
 
+# Verify the solution
+def is_valid_sudoku(grid):
+    def is_valid_group(group):
+        group = [x for x in group if x != 0]
+        return len(group) == len(set(group))
+
+    # Check rows
+    for row in grid:
+        if not is_valid_group(row):
+            return False
+
+    # Check columns
+    for col in range(9):
+        if not is_valid_group([grid[row][col] for row in range(9)]):
+            return False
+
+    # Check 3x3 boxes
+    for i in range(0, 9, 3):
+        for j in range(0, 9, 3):
+            box = [grid[r][c] for r in range(i, i + 3) for c in range(j, j + 3)]
+            if not is_valid_group(box):
+                return False
+
+    return True
+
+
 class BistableLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -119,6 +145,8 @@ optimizer = optim.Adam(model.parameters(), lr=0.01)
 
 # Training loop
 num_epochs = 1000
+solution_found_epoch = None
+
 for epoch in range(num_epochs):
     optimizer.zero_grad()
 
@@ -136,51 +164,36 @@ for epoch in range(num_epochs):
     total_loss.backward()
     optimizer.step()
 
+    # Check if solution is valid after each step
+    current_solution = model.get_solution()
+    if is_valid_sudoku(current_solution) and solution_found_epoch is None:
+        solution_found_epoch = epoch
+        print(f"*** SOLUTION FOUND AT EPOCH {epoch}! ***")
+        print("Solution:")
+        print(current_solution)
+        print()
+
     if epoch % 100 == 0:
         print(
             f"Epoch {epoch}: Total Loss = {total_loss.item():.4f}, "
             f"Bistable = {bistable.item():.4f}, Exclusion = {exclusion.item():.4f}"
         )
 
-        # Check current solution
-        current_solution = model.get_solution()
+        # Show current solution
         print("Current solution:")
         print(current_solution)
         print()
 
-# Final solution
+# Final results
 print("Final solution:")
 final_solution = model.get_solution()
 print(final_solution)
+print(f"\nIs final solution valid? {is_valid_sudoku(final_solution)}")
 
-
-# Verify the solution
-def is_valid_sudoku(grid):
-    def is_valid_group(group):
-        group = [x for x in group if x != 0]
-        return len(group) == len(set(group))
-
-    # Check rows
-    for row in grid:
-        if not is_valid_group(row):
-            return False
-
-    # Check columns
-    for col in range(9):
-        if not is_valid_group([grid[row][col] for row in range(9)]):
-            return False
-
-    # Check 3x3 boxes
-    for i in range(0, 9, 3):
-        for j in range(0, 9, 3):
-            box = [grid[r][c] for r in range(i, i + 3) for c in range(j, j + 3)]
-            if not is_valid_group(box):
-                return False
-
-    return True
-
-
-print(f"\nIs solution valid? {is_valid_sudoku(final_solution)}")
+if solution_found_epoch is not None:
+    print(f"\n🎉 Solution was first found at epoch {solution_found_epoch}!")
+else:
+    print("\n❌ No valid solution found during training.")
 
 # Show probability distribution for a few unknown cells
 print("\nProbability distributions for some unknown cells:")
