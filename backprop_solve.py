@@ -94,20 +94,28 @@ class SudokuSolver(nn.Module):
         # Each cell has 9 logits (before softmax) for numbers 1-9
         self.grid_logits = nn.Parameter(torch.zeros(9, 9, 9))
 
-        # Initialize based on the known/unknown cells
+        # Initialize based on the known/unknown cells - VECTORIZED
         with torch.no_grad():
-            for i in range(9):
-                for j in range(9):
-                    if initial_grid[i, j] != UNK:
-                        # Known cell - set high logit for correct number, low for others
-                        number = initial_grid[i, j] - 1  # Convert to 0-8 indexing
-                        self.grid_logits[i, j, :] = -10.0  # Low probability for all
-                        self.grid_logits[i, j, number] = (
-                            10.0  # High probability for correct number
-                        )
-                    else:
-                        # Unknown cell - initialize with equal logits (uniform after softmax)
-                        self.grid_logits[i, j, :] = 0.0
+            # Convert initial_grid to tensor for vectorized operations
+            grid_tensor = torch.tensor(initial_grid, dtype=torch.long)
+
+            # Create mask for known cells (not UNK)
+            known_mask = grid_tensor != UNK  # Shape: (9, 9)
+
+            # Initialize all cells to uniform (0.0 logits)
+            self.grid_logits.fill_(0.0)
+
+            # For known cells, set low logits everywhere first
+            self.grid_logits[known_mask] = -10.0
+
+            # For known cells, set high logit for the correct number
+            if known_mask.any():
+                # Get positions of known cells
+                known_rows, known_cols = torch.where(known_mask)
+                # Get the correct numbers (convert to 0-8 indexing)
+                correct_numbers = grid_tensor[known_mask] - 1
+                # Set high logits for correct numbers
+                self.grid_logits[known_rows, known_cols, correct_numbers] = 10.0
 
     def forward(self):
         # Convert logits to probabilities using softmax
