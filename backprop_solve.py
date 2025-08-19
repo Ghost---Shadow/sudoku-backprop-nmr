@@ -176,10 +176,13 @@ bistable_loss = BistableLoss()
 exclusion_loss = ExclusionLoss()
 
 # Optimizer (Critically damped)
-optimizer = optim.Adam(model.parameters(), lr=1.0)
+# optimizer = optim.Adam(model.parameters(), lr=1.0)
+
+# Optimizer (Finds solution in epoch 1)
+optimizer = optim.SGD(model.parameters(), lr=1.0, momentum=2.0)
 
 # FID recording
-num_epochs = 10
+num_epochs = 100
 fid_data = {
     "epoch": [],
     "real": [],
