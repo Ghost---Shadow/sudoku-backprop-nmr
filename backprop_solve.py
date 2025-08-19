@@ -158,11 +158,11 @@ model = SudokuSolver(unsolved_grid)
 bistable_loss = BistableLoss()
 exclusion_loss = ExclusionLoss()
 
-# Optimizer
-optimizer = optim.Adam(model.parameters(), lr=0.01)
+# Optimizer (Critically damped)
+optimizer = optim.Adam(model.parameters(), lr=1.0)
 
 # FID recording
-num_epochs = 1000
+num_epochs = 10
 fid_data = {
     "epoch": [],
     "total_coherence": [],
