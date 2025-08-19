@@ -65,35 +65,25 @@ class ExclusionLoss(nn.Module):
         grid_probs: (9, 9, 9) tensor where grid_probs[i,j,k] is probability
         that cell (i,j) contains number (k+1)
         """
-        total_loss = 0.0
 
-        # Row exclusion loss - penalize when sum of probabilities > 1
-        for i in range(9):  # for each row
-            for k in range(9):  # for each number (0-8 representing 1-9)
-                row_probs = grid_probs[i, :, k]  # shape: (9,)
-                prob_sum = torch.sum(row_probs)
-                # Penalize deviation from exactly 1
-                total_loss += (prob_sum - 1.0) ** 2
+        # Row exclusion loss - sum across columns (dim=1) for each row and number
+        # Result shape: (9, 9) -> 9 rows × 9 numbers
+        row_sums = torch.sum(grid_probs, dim=1)  # Sum across columns
+        row_loss = torch.sum((row_sums - 1.0) ** 2)
 
-        # Column exclusion loss
-        for j in range(9):  # for each column
-            for k in range(9):  # for each number
-                col_probs = grid_probs[:, j, k]  # shape: (9,)
-                prob_sum = torch.sum(col_probs)
-                total_loss += (prob_sum - 1.0) ** 2
+        # Column exclusion loss - sum across rows (dim=0) for each column and number
+        # Result shape: (9, 9) -> 9 columns × 9 numbers
+        col_sums = torch.sum(grid_probs, dim=0)  # Sum across rows
+        col_loss = torch.sum((col_sums - 1.0) ** 2)
 
-        # Box exclusion loss
-        for box_i in range(3):  # 3x3 boxes
-            for box_j in range(3):
-                for k in range(9):  # for each number
-                    # Extract 3x3 box
-                    box_probs = grid_probs[
-                        box_i * 3 : (box_i + 1) * 3, box_j * 3 : (box_j + 1) * 3, k
-                    ]
-                    prob_sum = torch.sum(box_probs)
-                    total_loss += (prob_sum - 1.0) ** 2
+        # Box exclusion loss - reshape and sum within each 3x3 box
+        # Reshape to group 3x3 boxes: (3, 3, 3, 3, 9) -> (box_row, box_col, cell_row, cell_col, number)
+        box_probs = grid_probs.view(3, 3, 3, 3, 9)
+        # Sum across the inner 3x3 dimensions (dim 2 and 3)
+        box_sums = torch.sum(box_probs, dim=(2, 3))  # Shape: (3, 3, 9)
+        box_loss = torch.sum((box_sums - 1.0) ** 2)
 
-        return total_loss
+        return row_loss + col_loss + box_loss
 
 
 class SudokuSolver(nn.Module):
