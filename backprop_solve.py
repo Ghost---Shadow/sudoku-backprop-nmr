@@ -91,43 +91,38 @@ class SudokuSolver(nn.Module):
         super().__init__()
 
         # Create the parameter tensor (9x9x9)
-        # Each cell has 9 logits (before softmax) for numbers 1-9
         self.grid_logits = nn.Parameter(torch.zeros(9, 9, 9))
 
-        # Initialize based on the known/unknown cells - VECTORIZED
+        # Store the mask for unknown cells
+        grid_tensor = torch.tensor(initial_grid, dtype=torch.long)
+        self.register_buffer("unknown_mask", grid_tensor == UNK)  # Shape: (9, 9)
+
+        # Initialize known cells
         with torch.no_grad():
-            # Convert initial_grid to tensor for vectorized operations
-            grid_tensor = torch.tensor(initial_grid, dtype=torch.long)
-
-            # Create mask for known cells (not UNK)
-            known_mask = grid_tensor != UNK  # Shape: (9, 9)
-
-            # Initialize all cells to uniform (0.0 logits)
             self.grid_logits.fill_(0.0)
-
-            # For known cells, set low logits everywhere first
-            self.grid_logits[known_mask] = -10.0
-
-            # For known cells, set high logit for the correct number
+            known_mask = ~self.unknown_mask
             if known_mask.any():
-                # Get positions of known cells
                 known_rows, known_cols = torch.where(known_mask)
-                # Get the correct numbers (convert to 0-8 indexing)
                 correct_numbers = grid_tensor[known_mask] - 1
-                # Set high logits for correct numbers
-                self.grid_logits[known_rows, known_cols, correct_numbers] = 10.0
+                self.grid_logits[known_rows, known_cols, :] = -20.0
+                self.grid_logits[known_rows, known_cols, correct_numbers] = 20.0
+
+        # Register hook to mask gradients
+        self.grid_logits.register_hook(self._mask_gradients)
+
+    def _mask_gradients(self, grad):
+        """Hook function to zero out gradients for known cells"""
+        mask_expanded = self.unknown_mask.unsqueeze(-1).expand_as(grad)
+        return grad * mask_expanded.float()
 
     def forward(self):
-        # Convert logits to probabilities using softmax
-        # Each cell becomes a probability distribution over numbers 1-9
         grid_probs = torch.softmax(self.grid_logits, dim=-1)
         return grid_probs
 
     def get_solution(self):
-        """Extract the most likely solution"""
         with torch.no_grad():
             grid_probs = self.forward()
-            solution = torch.argmax(grid_probs, dim=-1) + 1  # Convert back to 1-9
+            solution = torch.argmax(grid_probs, dim=-1) + 1
             return solution.numpy()
 
 
