@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Define the unsolved grid
 UNK = -1
@@ -61,26 +62,18 @@ class ExclusionLoss(nn.Module):
         super().__init__()
 
     def forward(self, grid_probs):
-        """
-        grid_probs: (9, 9, 9) tensor where grid_probs[i,j,k] is probability
-        that cell (i,j) contains number (k+1)
-        """
-
-        # Row exclusion loss - sum across columns (dim=1) for each row and number
-        # Result shape: (9, 9) -> 9 rows × 9 numbers
-        row_sums = torch.sum(grid_probs, dim=1)  # Sum across columns
+        """Vectorized exclusion loss"""
+        # Row exclusion loss
+        row_sums = torch.sum(grid_probs, dim=1)
         row_loss = torch.sum((row_sums - 1.0) ** 2)
 
-        # Column exclusion loss - sum across rows (dim=0) for each column and number
-        # Result shape: (9, 9) -> 9 columns × 9 numbers
-        col_sums = torch.sum(grid_probs, dim=0)  # Sum across rows
+        # Column exclusion loss
+        col_sums = torch.sum(grid_probs, dim=0)
         col_loss = torch.sum((col_sums - 1.0) ** 2)
 
-        # Box exclusion loss - reshape and sum within each 3x3 box
-        # Reshape to group 3x3 boxes: (3, 3, 3, 3, 9) -> (box_row, box_col, cell_row, cell_col, number)
+        # Box exclusion loss
         box_probs = grid_probs.view(3, 3, 3, 3, 9)
-        # Sum across the inner 3x3 dimensions (dim 2 and 3)
-        box_sums = torch.sum(box_probs, dim=(2, 3))  # Shape: (3, 3, 9)
+        box_sums = torch.sum(box_probs, dim=(2, 3))
         box_loss = torch.sum((box_sums - 1.0) ** 2)
 
         return row_loss + col_loss + box_loss
@@ -95,11 +88,11 @@ class SudokuSolver(nn.Module):
 
         # Store the mask for unknown cells
         grid_tensor = torch.tensor(initial_grid, dtype=torch.long)
-        self.register_buffer("unknown_mask", grid_tensor == UNK)  # Shape: (9, 9)
+        self.register_buffer("unknown_mask", grid_tensor == UNK)
 
-        # Initialize known cells
+        # Initialize based on the known/unknown cells
         with torch.no_grad():
-            self.grid_logits.fill_(0.0)
+            self.grid_logits.fill_(0.0)  # Unknown cells start uniform
             known_mask = ~self.unknown_mask
             if known_mask.any():
                 known_rows, known_cols = torch.where(known_mask)
@@ -107,11 +100,11 @@ class SudokuSolver(nn.Module):
                 self.grid_logits[known_rows, known_cols, :] = -20.0
                 self.grid_logits[known_rows, known_cols, correct_numbers] = 20.0
 
-        # Register hook to mask gradients
+        # Register hook to mask gradients for known cells
         self.grid_logits.register_hook(self._mask_gradients)
 
     def _mask_gradients(self, grad):
-        """Hook function to zero out gradients for known cells"""
+        """Mask gradients for known cells"""
         mask_expanded = self.unknown_mask.unsqueeze(-1).expand_as(grad)
         return grad * mask_expanded.float()
 
@@ -125,6 +118,38 @@ class SudokuSolver(nn.Module):
             solution = torch.argmax(grid_probs, dim=-1) + 1
             return solution.numpy()
 
+    def get_fid_signal(self):
+        """Calculate the FID signal - coherence of unknown cells"""
+        with torch.no_grad():
+            grid_probs = self.forward()
+
+            # Extract probabilities only for unknown cells
+            unknown_probs = grid_probs[self.unknown_mask]  # Shape: (num_unknown, 9)
+
+            # Calculate "magnetization" - deviation from equilibrium (uniform)
+            equilibrium = torch.ones_like(unknown_probs) / 9.0
+            magnetization = unknown_probs - equilibrium
+
+            # FID signal components:
+            # 1. Total coherence (sum of absolute magnetization)
+            total_coherence = torch.sum(torch.abs(magnetization))
+
+            # 2. Phase coherence (complex-like signal)
+            # Use the maximum probability as "real" part and entropy as "imaginary" part
+            max_probs = torch.max(unknown_probs, dim=1)[0]
+            entropy = -torch.sum(unknown_probs * torch.log(unknown_probs + 1e-8), dim=1)
+
+            # Average over all unknown cells
+            real_signal = torch.mean(max_probs - 1 / 9)  # Deviation from uniform
+            imag_signal = torch.mean(entropy - np.log(9))  # Deviation from max entropy
+
+            return {
+                "total_coherence": total_coherence.item(),
+                "real": real_signal.item(),
+                "imag": imag_signal.item(),
+                "magnitude": (real_signal**2 + imag_signal**2).sqrt().item(),
+            }
+
 
 # Initialize the model
 model = SudokuSolver(unsolved_grid)
@@ -136,10 +161,26 @@ exclusion_loss = ExclusionLoss()
 # Optimizer
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-# Training loop
+# FID recording
 num_epochs = 1000
+fid_data = {
+    "epoch": [],
+    "total_coherence": [],
+    "real": [],
+    "imag": [],
+    "magnitude": [],
+    "bistable_loss": [],
+    "exclusion_loss": [],
+    "total_loss": [],
+}
+
 solution_found_epoch = None
 
+print("🧲 Starting Sudoku NMR - Recording Free Induction Decay...")
+print("📡 Initial RF pulse applied - protons knocked out of equilibrium!")
+print()
+
+# Training loop
 for epoch in range(num_epochs):
     optimizer.zero_grad()
 
@@ -149,57 +190,145 @@ for epoch in range(num_epochs):
     # Calculate losses
     bistable = bistable_loss(grid_probs)
     exclusion = exclusion_loss(grid_probs)
-
-    # Total loss (you can adjust the weights)
     total_loss = bistable + 0.1 * exclusion
 
     # Backward pass
     total_loss.backward()
     optimizer.step()
 
-    # Check if solution is valid after each step
+    # Record FID signal
+    fid_signal = model.get_fid_signal()
+    fid_data["epoch"].append(epoch)
+    fid_data["total_coherence"].append(fid_signal["total_coherence"])
+    fid_data["real"].append(fid_signal["real"])
+    fid_data["imag"].append(fid_signal["imag"])
+    fid_data["magnitude"].append(fid_signal["magnitude"])
+    fid_data["bistable_loss"].append(bistable.item())
+    fid_data["exclusion_loss"].append(exclusion.item())
+    fid_data["total_loss"].append(total_loss.item())
+
+    # Check if solution is valid
     current_solution = model.get_solution()
     if is_valid_sudoku(current_solution) and solution_found_epoch is None:
         solution_found_epoch = epoch
-        print(f"*** SOLUTION FOUND AT EPOCH {epoch}! ***")
+        print(f"🎯 *** SOLUTION FOUND AT EPOCH {epoch}! ***")
+        print("📊 NMR signal collapsed to ground state!")
         print("Solution:")
         print(current_solution)
         print()
 
     if epoch % 100 == 0:
         print(
-            f"Epoch {epoch}: Total Loss = {total_loss.item():.4f}, "
-            f"Bistable = {bistable.item():.4f}, Exclusion = {exclusion.item():.4f}"
+            f"Epoch {epoch}: Loss = {total_loss.item():.4f}, "
+            f"FID Magnitude = {fid_signal['magnitude']:.4f}, "
+            f"Coherence = {fid_signal['total_coherence']:.2f}"
         )
 
-        # Show current solution
-        print("Current solution:")
-        print(current_solution)
-        print()
+print("\n🔬 NMR Experiment Complete - Analyzing Spectral Data...")
+
+# Create the FID and spectral plots
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+
+# Plot 1: FID Time Domain Signal (Real and Imaginary)
+ax1.plot(fid_data["epoch"], fid_data["real"], "b-", label="Real", alpha=0.7)
+ax1.plot(fid_data["epoch"], fid_data["imag"], "r-", label="Imaginary", alpha=0.7)
+ax1.set_xlabel("Time (Epochs)")
+ax1.set_ylabel("Signal Amplitude")
+ax1.set_title("Sudoku FID Signal - Time Domain")
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+if solution_found_epoch:
+    ax1.axvline(
+        solution_found_epoch,
+        color="green",
+        linestyle="--",
+        label=f"Solution Found (t={solution_found_epoch})",
+    )
+    ax1.legend()
+
+# Plot 2: FID Magnitude and Total Coherence
+ax2.plot(
+    fid_data["epoch"], fid_data["magnitude"], "purple", label="Magnitude", linewidth=2
+)
+ax2_twin = ax2.twinx()
+ax2_twin.plot(
+    fid_data["epoch"],
+    fid_data["total_coherence"],
+    "orange",
+    label="Total Coherence",
+    alpha=0.7,
+)
+ax2.set_xlabel("Time (Epochs)")
+ax2.set_ylabel("FID Magnitude", color="purple")
+ax2_twin.set_ylabel("Total Coherence", color="orange")
+ax2.set_title("Sudoku FID - Magnitude and Coherence")
+ax2.grid(True, alpha=0.3)
+
+# Plot 3: Frequency Domain (FFT of FID)
+# Create complex signal for FFT
+complex_signal = np.array(fid_data["real"]) + 1j * np.array(fid_data["imag"])
+fft_signal = np.fft.fft(complex_signal)
+frequencies = np.fft.fftfreq(len(fft_signal))
+
+ax3.plot(
+    frequencies[: len(frequencies) // 2],
+    np.abs(fft_signal)[: len(fft_signal) // 2],
+    "green",
+)
+ax3.set_xlabel("Frequency (cycles/epoch)")
+ax3.set_ylabel("Spectral Intensity")
+ax3.set_title("Sudoku NMR Spectrum - Frequency Domain")
+ax3.grid(True, alpha=0.3)
+
+# Plot 4: Loss Evolution
+ax4.semilogy(fid_data["epoch"], fid_data["total_loss"], "black", label="Total Loss")
+ax4.semilogy(
+    fid_data["epoch"],
+    fid_data["bistable_loss"],
+    "blue",
+    alpha=0.7,
+    label="Bistable (B₀ field)",
+)
+ax4.semilogy(
+    fid_data["epoch"],
+    fid_data["exclusion_loss"],
+    "red",
+    alpha=0.7,
+    label="Exclusion (Coupling)",
+)
+ax4.set_xlabel("Time (Epochs)")
+ax4.set_ylabel("Loss (Log Scale)")
+ax4.set_title("NMR Energy Levels - Loss Evolution")
+ax4.legend()
+ax4.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.suptitle("🧲 Sudoku NMR Spectroscopy Analysis 📡", fontsize=16, y=1.02)
+plt.savefig("sudoku_nmr_analysis.png", dpi=300, bbox_inches="tight")
+plt.close()  # Close the figure to free memory
+print("📁 Spectral analysis saved to: sudoku_nmr_analysis.png")
 
 # Final results
-print("Final solution:")
+print(f"\n🎯 Final Results:")
+print(f"Final solution:")
 final_solution = model.get_solution()
 print(final_solution)
-print(f"\nIs final solution valid? {is_valid_sudoku(final_solution)}")
+print(f"Is solution valid? {is_valid_sudoku(final_solution)}")
 
 if solution_found_epoch is not None:
-    print(f"\n🎉 Solution was first found at epoch {solution_found_epoch}!")
+    print(f"\n🏆 Solution found at epoch {solution_found_epoch}")
+    print(f"📈 Final FID magnitude: {fid_data['magnitude'][-1]:.6f}")
+    print(f"🔄 Final coherence: {fid_data['total_coherence'][-1]:.2f}")
 else:
-    print("\n❌ No valid solution found during training.")
+    print("\n❌ No valid solution found - signal did not fully relax")
 
-# Show probability distribution for a few unknown cells
-print("\nProbability distributions for some unknown cells:")
-with torch.no_grad():
-    final_probs = model()
-    for i in range(9):
-        for j in range(9):
-            if unsolved_grid[i, j] == UNK:
-                probs = final_probs[i, j].numpy()
-                max_prob_idx = np.argmax(probs)
-                print(
-                    f"Cell ({i},{j}): Number {max_prob_idx + 1} with probability {probs[max_prob_idx]:.3f}"
-                )
-                break
-        if unsolved_grid[i, j] == UNK:
-            break
+print(f"\n📊 Spectral Characteristics:")
+print(
+    f"Peak frequency: {frequencies[np.argmax(np.abs(fft_signal)[:len(fft_signal)//2])]:.4f} cycles/epoch"
+)
+print(f"Dominant spectral intensity: {np.max(np.abs(fft_signal)):.2f}")
+print(f"Initial coherence: {fid_data['total_coherence'][0]:.2f}")
+print(f"Final coherence: {fid_data['total_coherence'][-1]:.2f}")
+print(
+    f"Relaxation ratio: {fid_data['total_coherence'][-1]/fid_data['total_coherence'][0]:.4f}"
+)
