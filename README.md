@@ -1,4 +1,4 @@
-# Sudoku NMR Spectroscopy 🧲
+# [Sudoku NMR Spectroscopy 🧲](https://claude.ai/share/21cf5d2d-c45d-4e27-9aaa-6b82c3f739b7)
 
 > Neural optimization meets nuclear magnetic resonance: Solving constraint satisfaction problems through the lens of quantum relaxation dynamics.
 
