@@ -119,36 +119,53 @@ class SudokuSolver(nn.Module):
             return solution.numpy()
 
     def get_fid_signal(self):
-        """Calculate the FID signal - coherence of unknown cells"""
+        """Calculate the FID signal - transverse magnetization from equilibrium"""
         with torch.no_grad():
             grid_probs = self.forward()
 
             # Extract probabilities only for unknown cells
             unknown_probs = grid_probs[self.unknown_mask]  # Shape: (num_unknown, 9)
 
-            # Calculate "magnetization" - deviation from equilibrium (uniform)
-            equilibrium = torch.ones_like(unknown_probs) / 9.0
-            magnetization = unknown_probs - equilibrium
+            if len(unknown_probs) == 0:
+                return {"real": 0.0, "imag": 0.0, "magnitude": 0.0}
 
-            # FID signal components:
-            # 1. Total coherence (sum of absolute magnetization)
-            total_coherence = torch.sum(torch.abs(magnetization))
+            # CORRECT PHYSICS: Ground state (solution) = zero FID signal
+            # Maximum FID signal = uniform distribution (maximum uncertainty)
 
-            # 2. Phase coherence (complex-like signal)
-            # Use the maximum probability as "real" part and entropy as "imaginary" part
-            max_probs = torch.max(unknown_probs, dim=1)[0]
-            entropy = -torch.sum(unknown_probs * torch.log(unknown_probs + 1e-8), dim=1)
+            # Calculate "distance from solution" for each unknown cell
+            # When cell is certain about correct answer → FID approaches 0
+            # When cell is uncertain (uniform) → FID is maximum
 
-            # Average over all unknown cells
-            real_signal = torch.mean(max_probs - 1 / 9)  # Deviation from uniform
-            imag_signal = torch.mean(entropy - np.log(9))  # Deviation from max entropy
+            # Get maximum probability for each cell (confidence in current prediction)
+            max_probs = torch.max(unknown_probs, dim=1)[0]  # Shape: (num_unknown,)
 
-            return {
-                "total_coherence": total_coherence.item(),
-                "real": real_signal.item(),
-                "imag": imag_signal.item(),
-                "magnitude": (real_signal**2 + imag_signal**2).sqrt().item(),
-            }
+            # Calculate uncertainty: 1 = uniform (max uncertainty), 0 = certain (min uncertainty)
+            # Rescale from [1/9, 1] to [1, 0] for uncertainty
+            uncertainty = (1.0 - max_probs) / (1.0 - 1 / 9)  # Normalize to [0,1]
+
+            # Create phase information from which number each cell prefers
+            preferred_numbers = torch.argmax(
+                unknown_probs, dim=1
+            ).float()  # Shape: (num_unknown,)
+
+            # Convert to phases (each number gets a different phase)
+            phases = (preferred_numbers / 9.0) * 2 * np.pi  # Map 0-8 to 0-2π
+
+            # FID signal components (uncertainty modulated by phase)
+            real_components = uncertainty * torch.cos(phases)
+            imag_components = uncertainty * torch.sin(phases)
+
+            # Average across all unknown cells to get total magnetization
+            real_signal = torch.mean(real_components).item()
+            imag_signal = torch.mean(imag_components).item()
+
+            # Scale to [-1, 1] range for proper visualization
+            # When all cells are uncertain (uniform) → signal = ±1
+            # When all cells are certain (solved) → signal = 0
+
+            magnitude = (real_signal**2 + imag_signal**2) ** 0.5
+
+            return {"real": real_signal, "imag": imag_signal, "magnitude": magnitude}
 
 
 # Initialize the model
@@ -165,7 +182,6 @@ optimizer = optim.Adam(model.parameters(), lr=1.0)
 num_epochs = 10
 fid_data = {
     "epoch": [],
-    "total_coherence": [],
     "real": [],
     "imag": [],
     "magnitude": [],
@@ -199,7 +215,6 @@ for epoch in range(num_epochs):
     # Record FID signal
     fid_signal = model.get_fid_signal()
     fid_data["epoch"].append(epoch)
-    fid_data["total_coherence"].append(fid_signal["total_coherence"])
     fid_data["real"].append(fid_signal["real"])
     fid_data["imag"].append(fid_signal["imag"])
     fid_data["magnitude"].append(fid_signal["magnitude"])
@@ -220,8 +235,7 @@ for epoch in range(num_epochs):
     if epoch % 100 == 0:
         print(
             f"Epoch {epoch}: Loss = {total_loss.item():.4f}, "
-            f"FID Magnitude = {fid_signal['magnitude']:.4f}, "
-            f"Coherence = {fid_signal['total_coherence']:.2f}"
+            f"FID Magnitude = {fid_signal['magnitude']:.4f}"
         )
 
 print("\n🔬 NMR Experiment Complete - Analyzing Spectral Data...")
@@ -237,6 +251,8 @@ ax1.set_ylabel("Signal Amplitude")
 ax1.set_title("Sudoku FID Signal - Time Domain")
 ax1.legend()
 ax1.grid(True, alpha=0.3)
+ax1.set_ylim(-1.1, 1.1)  # Proper range for FID signal
+
 if solution_found_epoch:
     ax1.axvline(
         solution_found_epoch,
@@ -246,23 +262,19 @@ if solution_found_epoch:
     )
     ax1.legend()
 
-# Plot 2: FID Magnitude and Total Coherence
+# Plot 2: FID Magnitude Evolution
 ax2.plot(
-    fid_data["epoch"], fid_data["magnitude"], "purple", label="Magnitude", linewidth=2
-)
-ax2_twin = ax2.twinx()
-ax2_twin.plot(
     fid_data["epoch"],
-    fid_data["total_coherence"],
-    "orange",
-    label="Total Coherence",
-    alpha=0.7,
+    fid_data["magnitude"],
+    "purple",
+    label="FID Magnitude",
+    linewidth=2,
 )
 ax2.set_xlabel("Time (Epochs)")
-ax2.set_ylabel("FID Magnitude", color="purple")
-ax2_twin.set_ylabel("Total Coherence", color="orange")
-ax2.set_title("Sudoku FID - Magnitude and Coherence")
+ax2.set_ylabel("FID Magnitude")
+ax2.set_title("Sudoku FID - Magnitude Decay")
 ax2.grid(True, alpha=0.3)
+ax2.set_ylim(0, 1.1)  # FID magnitude should decay from ~1 to 0
 
 # Plot 3: Frequency Domain (FFT of FID)
 # Create complex signal for FFT
@@ -318,17 +330,14 @@ print(f"Is solution valid? {is_valid_sudoku(final_solution)}")
 if solution_found_epoch is not None:
     print(f"\n🏆 Solution found at epoch {solution_found_epoch}")
     print(f"📈 Final FID magnitude: {fid_data['magnitude'][-1]:.6f}")
-    print(f"🔄 Final coherence: {fid_data['total_coherence'][-1]:.2f}")
 else:
-    print("\n❌ No valid solution found - signal did not fully relax")
+    print("\n❌ No valid solution found - signal did not fully decay")
 
 print(f"\n📊 Spectral Characteristics:")
 print(
     f"Peak frequency: {frequencies[np.argmax(np.abs(fft_signal)[:len(fft_signal)//2])]:.4f} cycles/epoch"
 )
 print(f"Dominant spectral intensity: {np.max(np.abs(fft_signal)):.2f}")
-print(f"Initial coherence: {fid_data['total_coherence'][0]:.2f}")
-print(f"Final coherence: {fid_data['total_coherence'][-1]:.2f}")
-print(
-    f"Relaxation ratio: {fid_data['total_coherence'][-1]/fid_data['total_coherence'][0]:.4f}"
-)
+print(f"Initial FID magnitude: {fid_data['magnitude'][0]:.4f}")
+print(f"Final FID magnitude: {fid_data['magnitude'][-1]:.4f}")
+print(f"Signal decay ratio: {fid_data['magnitude'][-1]/fid_data['magnitude'][0]:.4f}")
