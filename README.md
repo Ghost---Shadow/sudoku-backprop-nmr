@@ -15,7 +15,8 @@ This project demonstrates a novel approach to Sudoku solving using neural optimi
 
 ## Files
 
-- `backprop_solve.py` - Main solver with NMR signal generation and spectral analysis
+- `backprop_solve.py` - Original solver with bistable + exclusion loss functions
+- `backprop_solve_softmax.py` - Simplified softmax-only version (combines both loss functions)
 - `sudoku_nmr_analysis.png` - Generated spectroscopy plots showing FID decay and frequency spectrum
 
 ## Physics-Optimization Analogy
@@ -43,11 +44,17 @@ pip install torch numpy matplotlib
 
 ## Usage
 
-```python
+**Original Version (Bistable + Exclusion):**
+```bash
 python backprop_solve.py
 ```
 
-The script will:
+**Simplified Softmax Version:**
+```bash
+python backprop_solve_softmax.py
+```
+
+Both scripts will:
 1. 🧲 Initialize the "NMR spectrometer" 
 2. 📡 Apply initial "RF pulse" (uniform probability distribution)
 3. 🔬 Record FID signals during optimization
@@ -66,6 +73,8 @@ Grid: 9×9×9 tensor (position × position × number_probability)
 
 ### Loss Functions
 
+#### Original Approach (`backprop_solve.py`)
+
 **Bistable Loss** (Magnetic Field)
 ```python
 def bistable_loss(x):
@@ -78,6 +87,22 @@ def bistable_loss(x):
 row_loss = Σ(Σ(probs[row, :, number]) - 1)²
 col_loss = Σ(Σ(probs[:, col, number]) - 1)²  
 box_loss = Σ(Σ(probs[box, number]) - 1)²
+```
+
+#### Softmax Approach (`backprop_solve_softmax.py`)
+
+**Combined Softmax Loss** (Unified Constraints)
+```python
+def exclusion_loss(grid_logits):
+    # Softmax inherently combines bistable + exclusion behavior:
+    # - Entropy minimization → drives toward peaked states (bistable effect)
+    # - Normalization per constraint group → ensures sum=1 (exclusion effect)
+    
+    row_entropy = entropy(softmax(grid_logits, dim=1))
+    col_entropy = entropy(softmax(grid_logits, dim=0)) 
+    box_entropy = entropy(softmax(box_logits, dim=box_dim))
+    
+    return row_entropy + col_entropy + box_entropy  # Always >= 0
 ```
 
 ### FID Signal Calculation
@@ -157,7 +182,13 @@ Each Sudoku puzzle exhibits unique **spectral fingerprints** based on:
 
 ## Theory
 
-The fundamental insight is that neural optimization of discrete constraint problems naturally exhibits quantum relaxation dynamics. The bistable loss creates potential wells analogous to nuclear spin states, while constraint coupling mimics magnetic field interactions. This allows us to:
+The fundamental insight is that neural optimization of discrete constraint problems naturally exhibits quantum relaxation dynamics. 
+
+**Original Approach**: The bistable loss creates potential wells analogous to nuclear spin states, while constraint coupling mimics magnetic field interactions.
+
+**Softmax Approach**: Softmax naturally combines both effects - entropy minimization drives toward peaked states (bistable effect) while normalization per constraint group ensures sum-to-1 constraints (exclusion effect). This unified approach is mathematically cleaner and naturally bounded at zero.
+
+Both approaches allow us to:
 
 1. **Visualize optimization** as physical relaxation processes
 2. **Analyze convergence** through established NMR theory
