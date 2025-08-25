@@ -47,36 +47,29 @@ def is_valid_sudoku(grid):
     return True
 
 
-class BistableLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        a = x**2
-        b = (x - 1) ** 2
-        return (a * b).mean()
-
-
 class ExclusionLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, grid_probs):
-        """Vectorized exclusion loss"""
-        # Row exclusion loss
-        row_sums = torch.sum(grid_probs, dim=1)
-        row_loss = torch.sum((row_sums - 1.0) ** 2)
+    def forward(self, grid_logits):
+        """Softmax-based exclusion loss, lower bounded at zero"""
+        # Row softmax - each row normalized
+        row_probs = torch.softmax(grid_logits, dim=1)
 
-        # Column exclusion loss
-        col_sums = torch.sum(grid_probs, dim=0)
-        col_loss = torch.sum((col_sums - 1.0) ** 2)
+        # Column softmax - each column normalized
+        col_probs = torch.softmax(grid_logits, dim=0)
 
-        # Box exclusion loss
-        box_probs = grid_probs.view(3, 3, 3, 3, 9)
-        box_sums = torch.sum(box_probs, dim=(2, 3))
-        box_loss = torch.sum((box_sums - 1.0) ** 2)
+        # Box softmax - each 3x3 box normalized
+        box_logits = grid_logits.view(3, 3, 3, 3, 9)
+        box_probs = torch.softmax(box_logits.view(9, 9, 9), dim=0).view(3, 3, 3, 3, 9)
 
-        return row_loss + col_loss + box_loss
+        # Use entropy (always >= 0) to encourage peaky distributions
+        # Entropy is minimized when distribution is peaked, maximized when uniform
+        row_entropy = -torch.sum(row_probs * torch.log(row_probs + 1e-8))
+        col_entropy = -torch.sum(col_probs * torch.log(col_probs + 1e-8))
+        box_entropy = -torch.sum(box_probs * torch.log(box_probs + 1e-8))
+
+        return row_entropy + col_entropy + box_entropy
 
 
 class SudokuSolver(nn.Module):
@@ -171,8 +164,7 @@ class SudokuSolver(nn.Module):
 # Initialize the model
 model = SudokuSolver(unsolved_grid)
 
-# Initialize loss functions
-bistable_loss = BistableLoss()
+# Initialize loss function
 exclusion_loss = ExclusionLoss()
 
 # Optimizer (Critically damped)
@@ -188,9 +180,7 @@ fid_data = {
     "real": [],
     "imag": [],
     "magnitude": [],
-    "bistable_loss": [],
     "exclusion_loss": [],
-    "total_loss": [],
 }
 
 solution_found_epoch = None
@@ -206,10 +196,8 @@ for epoch in range(num_epochs):
     # Forward pass
     grid_probs = model()
 
-    # Calculate losses
-    bistable = bistable_loss(grid_probs)
-    exclusion = exclusion_loss(grid_probs)
-    total_loss = bistable + 0.1 * exclusion
+    # Calculate loss (pass raw logits to loss function)
+    total_loss = exclusion_loss(model.grid_logits)
 
     # Backward pass
     total_loss.backward()
@@ -221,9 +209,7 @@ for epoch in range(num_epochs):
     fid_data["real"].append(fid_signal["real"])
     fid_data["imag"].append(fid_signal["imag"])
     fid_data["magnitude"].append(fid_signal["magnitude"])
-    fid_data["bistable_loss"].append(bistable.item())
-    fid_data["exclusion_loss"].append(exclusion.item())
-    fid_data["total_loss"].append(total_loss.item())
+    fid_data["exclusion_loss"].append(total_loss.item())
 
     # Check if solution is valid
     current_solution = model.get_solution()
@@ -296,20 +282,8 @@ ax3.set_title("Sudoku NMR Spectrum - Frequency Domain")
 ax3.grid(True, alpha=0.3)
 
 # Plot 4: Loss Evolution
-ax4.semilogy(fid_data["epoch"], fid_data["total_loss"], "black", label="Total Loss")
 ax4.semilogy(
-    fid_data["epoch"],
-    fid_data["bistable_loss"],
-    "blue",
-    alpha=0.7,
-    label="Bistable (B₀ field)",
-)
-ax4.semilogy(
-    fid_data["epoch"],
-    fid_data["exclusion_loss"],
-    "red",
-    alpha=0.7,
-    label="Exclusion (Coupling)",
+    fid_data["epoch"], fid_data["exclusion_loss"], "black", label="Exclusion Loss"
 )
 ax4.set_xlabel("Time (Epochs)")
 ax4.set_ylabel("Loss (Log Scale)")
